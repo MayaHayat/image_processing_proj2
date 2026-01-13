@@ -1,9 +1,17 @@
 import cv2
 import numpy as np
+from camera_calibration import calibrate_camera
 
 # 1. Load assets
 target_img = cv2.imread('org_image.png') 
 cap = cv2.VideoCapture('video.mp4')
+
+
+# If not found, run calibration
+print("Running camera calibration...")
+calib = calibrate_camera(verbose=False)
+K = calib['camera_matrix']
+dist_coeffs = calib['dist_coeffs']
 
 # 2. ESTIMATED CAMERA PARAMETERS (Replace with real ones after calibration)
 width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -13,6 +21,7 @@ K = np.array([[focal_length, 0, width/2],
               [0, focal_length, height/2],
               [0, 0, 1]], dtype=np.float32)
 dist_coeffs = np.zeros((4,1)) # Assuming no distortion for now
+# when calibration is done remove all lines above and under #2
 
 # 3. DEFINE 3D CUBE POINTS (World Coordinates)
 # We use the target image size as the base. Z is height.
