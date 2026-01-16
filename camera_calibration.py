@@ -4,30 +4,10 @@ import glob
 import os
 
 
-def calibrate_camera(calibration_path='/Users/ysolomon/Downloads/Calibration ', 
+def calibrate_camera(calibration_path='chess', 
                      chessboard_size=(8, 6), 
                      square_size=1.0,
                      verbose=True):
-    """
-    Calibrate camera using chessboard images.
-    
-    Args:
-        calibration_path: Path to folder containing calibration images
-        chessboard_size: Tuple of (columns, rows) of internal corners
-        square_size: Size of a chessboard square in your defined unit
-        verbose: Whether to print progress messages
-    
-    Returns:
-        dict: Dictionary containing:
-            - 'camera_matrix': The camera intrinsic matrix (K)
-            - 'dist_coeffs': Distortion coefficients
-            - 'rms': RMS reprojection error
-            - 'image_size': (width, height) of calibration images
-            - 'rvecs': Rotation vectors for each image
-            - 'tvecs': Translation vectors for each image
-    """
-    # Termination criteria for corner refinement
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
     
     # Prepare object points based on the actual chessboard dimensions
     objp = np.zeros((chessboard_size[0] * chessboard_size[1], 3), np.float32)
@@ -51,8 +31,6 @@ def calibrate_camera(calibration_path='/Users/ysolomon/Downloads/Calibration ',
         print(f"Looking for chessboard pattern: {chessboard_size}")
     
     for i, fn in enumerate(images):
-        if (i > 10):
-            break
         if verbose:
             print("processing %s... " % fn)
         
@@ -86,7 +64,6 @@ def calibrate_camera(calibration_path='/Users/ysolomon/Downloads/Calibration ',
     rms, camera_matrix, dist_coefs, rvecs, tvecs = cv2.calibrateCamera(
         objpoints, imgpoints, (w, h), None, None
     )
-    
     if verbose:
         print(f"\nCalibration successful!")
         print(f"RMS reprojection error: {rms}")
