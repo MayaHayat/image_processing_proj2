@@ -56,6 +56,7 @@ while cap.isOpened():
 
     # --- SAVE THE FRAME ---
     out.write(final_frame)
+    cv2.drawFrameAxes(frame, K, dist_coeffs, rvec, tvec, 50)
     
     cv2.imshow('AR Result', final_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
