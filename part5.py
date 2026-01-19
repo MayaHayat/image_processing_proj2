@@ -1,118 +1,118 @@
 import cv2
 import numpy as np
 
-# --- CONFIGURATION ---
-# List your 3 target images (markers)
-target_files = ['radio.png', 'mdco_gemini.png', 'org_image.png']
-# List 3 different panorama/360 images to show inside the portals
-portal_views = ['forest.jpg', 'space.jpg', 'beach.jpg']
+# --- 1. CONFIGURATION & ASSETS ---
+target_files = ['org_image.png', 'mdco_gemini.png', 'flower_vib.png']
+pano_files = ['forest_360.jpg', 'space_360.jpg', 'ocean_360.jpg']
 
-def get_parallax_view(panorama, rvec, tvec, K, portal_w, portal_h):
-    """
-    Calculates the parallax crop from a 360 image based on camera pose.
-    """
-    # 1. Calculate the camera position in the plane's coordinate system
-    R_mat, _ = cv2.Rodrigues(rvec)
-    # Camera position in world coords: C = -R^T * t
-    cam_pos_in_plane = -R_mat.T @ tvec
-    
-    # 2. Use the camera's X and Y position to 'shift' the view
-    # As the camera moves left, we see the right side of the 360 world
-    shift_x = int(cam_pos_in_plane[0] * 0.5) 
-    shift_y = int(cam_pos_in_plane[1] * 0.5)
-    
-    # 3. Crop a section of the panorama based on this shift
-    h, w = panorama.shape[:2]
-    center_x, center_y = w // 2 + shift_x, h // 2 + shift_y
-    
-    # Ensure crop stays within bounds
-    x1 = np.clip(center_x - portal_w//2, 0, w - portal_w)
-    y1 = np.clip(center_y - portal_h//2, 0, h - portal_h)
-    
-    view_crop = panorama[y1:y1+portal_h, x1:x1+portal_w]
-    return cv2.resize(view_crop, (portal_w, portal_h))
+calib_data = np.load('camera_calibration.npz')
+camera_matrix = calib_data['camera_matrix']
+dist_coeffs = calib_data['dist_coeffs']
 
-def main():
-    # 1. Load Assets
-    targets = [cv2.imread(f) for f in target_files]
-    views = [cv2.imread(v) for v in portal_views]
-    cap = cv2.VideoCapture('part5_og_vid.mp4')
+cap = cv2.VideoCapture('part5#3.mp4')
+fw, fh = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+fps = int(cap.get(cv2.CAP_PROP_FPS))
+out = cv2.VideoWriter('final_multi_portal.mp4', cv2.VideoWriter_fourcc(*'mp4v'), fps, (fw, fh))
+
+sift = cv2.SIFT_create()
+flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
+
+# --- 2. PRE-PROCESS TARGETS ---
+markers = []
+for i in range(3):
+    t_img, p_img = cv2.imread(target_files[i]), cv2.imread(pano_files[i])
     
-    # Load Calibration from Part 2
-    calib = np.load('camera_calibration.npz')
-    K, dist = calib['camera_matrix'], calib['dist_coeffs']
+    if t_img is None or p_img is None:
+        print(f"Error loading assets for marker {i}.")
+        continue
+
+    kp, des = sift.detectAndCompute(t_img, None)
+    h, w = t_img.shape[:2]
+    markers.append({
+        'kp': kp, 'des': des, 'pano': p_img, 'w': w, 'h': h,
+        'obj_pts': np.float32([[0,0,0], [w,0,0], [w,h,0], [0,h,0]]),
+        'prev_center': None, 'prev_radius': None, 'prev_shift_x': 0.0, 'prev_shift_y': 0.0
+    })
+
+alpha = 0.15 
+
+# --- 3. MAIN PROCESSING LOOP ---
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret: break
+
+    output_frame = frame.copy()
+    kp_frame, des_frame = sift.detectAndCompute(frame, None)
     
-    # 2. Setup SIFT for 3 targets
-    sift = cv2.SIFT_create()
-    target_data = []
-    for t in targets:
-        kp, des = sift.detectAndCompute(t, None)
-        h, w = t.shape[:2]
-        # 3D points for solvePnP
-        obj_pts = np.float32([[0,0,0], [w,0,0], [w,h,0], [0,h,0]])
-        target_data.append({'kp': kp, 'des': des, 'obj_pts': obj_pts, 'size': (w, h)})
+    if des_frame is not None:
+        for m in markers:
+            matches = flann.knnMatch(m['des'], des_frame, k=2)
+            # Use a slightly stricter ratio (0.7) to prevent cross-marker jumping
+            good = [mat for mat, n in matches if mat.distance < 0.7 * n.distance]
 
-    flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=50))
+            if len(good) > 35:
+                src_pts = np.float32([m['kp'][mat.queryIdx].pt for mat in good]).reshape(-1, 1, 2)
+                dst_pts = np.float32([kp_frame[mat.trainIdx].pt for mat in good]).reshape(-1, 1, 2)
+                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret: break
-        
-        kp_frame, des_frame = sift.detectAndCompute(frame, None)
-        if des_frame is None: continue
-
-        # 3. Process each target marker
-        for i, data in enumerate(target_data):
-            matches = flann.knnMatch(data['des'], des_frame, k=2)
-            good = [m for m, n in matches if m.distance < 0.7 * n.distance]
-            
-            if len(good) > 20:
-                src_pts = np.float32([data['kp'][m.queryIdx].pt for m in good]).reshape(-1,1,2)
-                dst_pts = np.float32([kp_frame[m.trainIdx].pt for m in good]).reshape(-1,1,2)
-                H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-                
-                if H is not None:
-                    # Solve PnP for camera pose relative to this marker
-                    w, h = data['size']
-                    ref_corners = np.float32([[0,0], [w,0], [w,h], [0,h]]).reshape(-1,1,2)
+                # Only proceed if Homography is robust and enough points survived RANSAC
+                if H is not None and np.sum(mask) > 25:
+                    # A. Bounding Box & Pose
+                    ref_corners = np.float32([[0,0], [m['w'],0], [m['w'],m['h']], [0,m['h']]]).reshape(-1,1,2)
                     img_pts = cv2.perspectiveTransform(ref_corners, H)
-                    _, rvec, tvec = cv2.solvePnP(data['obj_pts'], img_pts, K, dist)
+                    cv2.polylines(output_frame, [np.int32(img_pts)], True, (0, 255, 0), 2)
+                    _, rvec, tvec = cv2.solvePnP(m['obj_pts'], img_pts, camera_matrix, dist_coeffs)
 
-                    # --- RENDER PORTAL ---
-                    # 1. Get the parallax view from the 360 image
-                    portal_w, portal_h = w // 2, h // 2
-                    view = get_parallax_view(views[i], rvec, tvec, K, portal_w, portal_h)
-                    
-                    # 2. Warp the portal view onto the frame
-                    # Define portal corners in the center of the marker
-                    p_x, p_y = w // 4, h // 4
-                    portal_pts_src = np.float32([[0,0], [portal_w,0], [portal_w,portal_h], [0,portal_h]])
-                    portal_pts_dst_on_marker = np.float32([[p_x, p_y], [p_x+portal_w, p_y], 
-                                                         [p_x+portal_w, p_y+portal_h], [p_x, p_y+portal_h]])
-                    
-                    # Use Homography to map portal view to video frame
-                    # We modify the portal coordinates by the marker's homography
-                    warped_portal_pts = cv2.perspectiveTransform(portal_pts_dst_on_marker.reshape(-1,1,2), H)
-                    
-                    H_portal, _ = cv2.findHomography(portal_pts_src, warped_portal_pts)
-                    warped_view = cv2.warpPerspective(view, H_portal, (frame.shape[1], frame.shape[0]))
-                    
-                    # 3. Blend and add a Border
-                    mask_portal = np.zeros(frame.shape[:2], dtype=np.uint8)
-                    cv2.fillConvexPoly(mask_portal, np.int32(warped_portal_pts), 255)
-                    
-                    frame = cv2.bitwise_and(frame, frame, mask=cv2.bitwise_not(mask_portal))
-                    frame = cv2.add(frame, warped_view)
-                    
-                    # Draw Border/Frame
-                    cv2.polylines(frame, [np.int32(warped_portal_pts)], True, (255, 255, 255), 4)
+                    # B. Parallax Math
+                    R_mat, _ = cv2.Rodrigues(rvec)
+                    cam_pos = -R_mat.T @ tvec
+                    ph, pw = m['pano'].shape[:2]
+                    curr_sx = (cam_pos[0] / cam_pos[2]) * pw * 2.0
+                    curr_sy = (cam_pos[1] / cam_pos[2]) * ph * 2.0
+                    m['prev_shift_x'] = alpha * curr_sx + (1 - alpha) * m['prev_shift_x']
+                    m['prev_shift_y'] = alpha * curr_sy + (1 - alpha) * m['prev_shift_y']
 
-        cv2.imshow('Part 5: Multi-Portal AR', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'): break
+                    cw, ch = int(pw * 0.25), int(ph * 0.25)
+                    cx = (pw // 2 + int(m['prev_shift_x'])) % pw
+                    cy = np.clip(ph // 2 + int(m['prev_shift_y']), ch // 2, ph - ch // 2)
+                    x1, y1 = (cx - cw // 2) % pw, cy - ch // 2
+                    
+                    # C. View Extraction with Wrap-around
+                    if x1 + cw <= pw: view = m['pano'][y1:y1+ch, x1:x1+cw]
+                    else: view = np.hstack([m['pano'][y1:y1+ch, x1:], m['pano'][y1:y1+ch, : (x1+cw)%pw]])
+                    view = cv2.resize(view, (800, 800))
 
-    cap.release()
-    cv2.destroyAllWindows()
+                    # D. Smoothed Geometry
+                    m_center = H @ np.array([[m['w']//2], [m['h']//2], [1.0]])
+                    center_f = (m_center / m_center[2]).flatten()
+                    curr_r = (min(m['w'], m['h']) // 3) * (np.sqrt(H[0,0]**2 + H[0,1]**2))
 
+                    if m['prev_center'] is None: m['prev_center'], m['prev_radius'] = center_f[:2], curr_r
+                    else:
+                        m['prev_center'] = alpha * center_f[:2] + (1 - alpha) * m['prev_center']
+                        m['prev_radius'] = alpha * curr_r + (1 - alpha) * m['prev_radius']
 
-if __name__ == "__main__":
-    main()
+                    # E. Rendering (With Exit Protection)
+                    side = (min(m['w'], m['h']) // 3) * 2
+                    p_pts_target = np.float32([[m['w']//2-side, m['h']//2-side], [m['w']//2+side, m['h']//2-side], [m['w']//2+side, m['h']//2+side], [m['w']//2-side, m['h']//2+side]])
+                    p_pts_frame = cv2.perspectiveTransform(p_pts_target.reshape(-1,1,2), H)
+                    Hv, _ = cv2.findHomography(np.float32([[0,0], [800,0], [800,800], [0,800]]), p_pts_frame)
+
+                    # Only warp and blend if Hv is valid (Prevents crashes when marker exits)
+                    if Hv is not None and Hv.shape == (3, 3):
+                        warped = cv2.warpPerspective(view, Hv, (fw, fh))
+                        mask = np.zeros((fh, fw), dtype=np.uint8)
+                        center_px = (int(m['prev_center'][0]), int(m['prev_center'][1]))
+                        cv2.circle(mask, center_px, int(m['prev_radius']), 255, -1)
+                        
+                        output_frame = cv2.bitwise_and(output_frame, output_frame, mask=cv2.bitwise_not(mask))
+                        output_frame = cv2.add(output_frame, cv2.bitwise_and(warped, warped, mask=mask))
+                        cv2.circle(output_frame, center_px, int(m['prev_radius']), (255, 255, 255), 5)
+
+    out.write(output_frame)
+    cv2.imshow('Final Multi-Portal', output_frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+cap.release()
+out.release()
+cv2.destroyAllWindows()
