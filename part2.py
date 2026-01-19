@@ -1,18 +1,25 @@
 import cv2
 import numpy as np
+from camera_calibration import calibrate_camera
 
 # 1. Load assets
 target_img = cv2.imread('org_image.png') 
 cap = cv2.VideoCapture('video.mp4')
 
-# 2. ESTIMATED CAMERA PARAMETERS (Replace with real ones after calibration)
-width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-focal_length = width 
-K = np.array([[focal_length, 0, width/2],
-              [0, focal_length, height/2],
-              [0, 0, 1]], dtype=np.float32)
-dist_coeffs = np.zeros((4,1)) # Assuming no distortion for now
+# 2. GET CALIBRATED CAMERA PARAMETERS
+try:
+    # Try to load previously saved calibration
+    calib_data = np.load('camera_calibration.npz')
+    K = calib_data['camera_matrix']
+    dist_coeffs = calib_data['dist_coeffs']
+    print("Loaded calibration from camera_calibration.npz")
+except FileNotFoundError:
+    # If not found, run calibration
+    print("Running camera calibration...")
+    calib = calibrate_camera(verbose=False)
+    K = calib['camera_matrix']
+    dist_coeffs = calib['dist_coeffs']
+    print("Camera calibration complete")
 
 # 3. DEFINE 3D CUBE POINTS (World Coordinates)
 # We use the target image size as the base. Z is height.
@@ -51,11 +58,11 @@ while cap.isOpened():
         matches = flann.knnMatch(des_target, des_frame, k=2)
         good_matches = [m for m, n in matches if m.distance < 0.75 * n.distance]
 
-        if len(good_matches) > 15:
+        if len(good_matches) > 30:
             # Get Homography just to find the 4 corners of the box in the video
             src_pts = np.float32([kp_target[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp_frame[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-            H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+            H, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 3.0)
 
             if H is not None:
                 # Find where the 4 corners are in the video frame
@@ -64,7 +71,7 @@ while cap.isOpened():
 
                 # --- PART 2 CORE: SolvePnP ---
                 # This finds the Rotation (rvec) and Translation (tvec) of the camera
-                success, rvec, tvec = cv2.solvePnP(obj_pts_plane, img_pts, K, dist_coeffs)
+                success, rvec, tvec = cv2.solvePnP(obj_pts_plane, img_pts, K, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
 
                 if success:
                     # Project the 8 3D cube points into 2D pixel coordinates

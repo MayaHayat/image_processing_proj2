@@ -209,7 +209,7 @@ def create_lego_vase(radius=40, height=75, brick_height=8):
 # ============================================================
 
 print("Generating LEGO Bouquet...")
-bouquet = create_bouquet(num_flowers=8)
+bouquet = create_bouquet(num_flowers=7)
 
 print("Building LEGO Vase...")
 vase = create_lego_vase(radius=38, height=80)
